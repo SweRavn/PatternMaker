@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pärlplattemönster</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #222; --muted: #666; --accent: #d9480f; --border: #ddd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1d; --panel: #26262a; --text: #eee; --muted: #aaa; --accent: #ff8a4c; --border: #3a3a40; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.5rem; margin: 0.5rem 0 1rem; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 16px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; color: var(--muted); }
+  label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
+  input[type=number], input[type=file], select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: transparent; color: var(--accent); }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  #status { color: var(--muted); font-size: 0.9rem; margin-top: 10px; min-height: 1.2em; }
+  #preview { max-width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
+  #source { max-width: 220px; max-height: 220px; border-radius: 6px; display: none; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pärlplattemönster</h1>
+
+  <div class="panel">
+    <div class="row">
+      <div style="flex:1; min-width:260px">
+        <div class="controls">
+          <label>Bild (JPEG)
+            <input type="file" id="file" accept="image/jpeg,image/*">
+          </label>
+          <label>Bredd N (pärlor)
+            <input type="number" id="cols" value="29" min="1" max="400">
+          </label>
+          <label>Höjd M (pärlor)
+            <input type="number" id="rows" value="29" min="1" max="400">
+          </label>
+          <label>Antal färger
+            <input type="number" id="colors" value="8" min="1" max="62">
+          </label>
+          <label>Anpassning
+            <select id="fit">
+              <option value="crop">Beskär (behåll proportioner)</option>
+              <option value="stretch">Sträck ut</option>
+              <option value="pad">Passa in (vit kant)</option>
+            </select>
+          </label>
+          <label>Pärlstorlek i PNG (px)
+            <input type="number" id="cell" value="24" min="8" max="64">
+          </label>
+          <label class="check"><input type="checkbox" id="symbols" checked> Visa symboler</label>
+          <label class="check"><input type="checkbox" id="grid10" checked> Stödlinjer var 10:e</label>
+        </div>
+        <div class="actions">
+          <button id="generate" disabled>Generera mönster</button>
+          <button id="download" class="secondary" disabled>Ladda ner PNG</button>
+        </div>
+        <div id="status">Välj en bild för att börja.</div>
+      </div>
+      <img id="source" alt="Originalbild">
+    </div>
+  </div>
+
+  <div class="panel">
+    <img id="preview" alt="Genererat mönster">
+  </div>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const SYMBOLS = '123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz#@%&+=';
+  let img = null;
+  let lastBlobUrl = null;
+
+  $('file').addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    const im = new Image();
+    im.onload = () => {
+      img = im;
+      $('source').src = url;
+      $('source').style.display = 'block';
+      $('generate').disabled = false;
+      $('status').textContent = `Bild inläst: ${im.naturalWidth}×${im.naturalHeight} px.`;
+      // Föreslå höjd utifrån proportionerna
+      const n = clampInt($('cols').value, 1, 400);
+      $('rows').value = Math.max(1, Math.round(n * im.naturalHeight / im.naturalWidth));
+      generate();
+    };
+    im.onerror = () => { $('status').textContent = 'Kunde inte läsa bilden.'; };
+    im.src = url;
+  });
+
+  $('generate').addEventListener('click', generate);
+  $('download').addEventListener('click', () => {
+    if (!lastBlobUrl) return;
+    const a = document.createElement('a');
+    a.href = lastBlobUrl;
+    a.download = `parlmonster_${$('cols').value}x${$('rows').value}_${$('colors').value}f.png`;
+    a.click();
+  });
+
+  function clampInt(v, lo, hi) {
+    v = parseInt(v, 10);
+    if (isNaN(v)) v = lo;
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  function generate() {
+    if (!img) return;
+    const N = clampInt($('cols').value, 1, 400);
+    const M = clampInt($('rows').value, 1, 400);
+    const K = clampInt($('colors').value, 1, SYMBOLS.length);
+    const cell = clampInt($('cell').value, 8, 64);
+    $('status').textContent = 'Beräknar…';
+    // Låt webbläsaren rita statusraden innan tunga beräkningar
+    setTimeout(() => {
+      const cells = sampleGrid(img, N, M, $('fit').value);
+      const { palette, labels } = quantize(cells, K);
+      const canvas = render(N, M, cells, palette, labels, cell, $('symbols').checked, $('grid10').checked);
+      canvas.toBlob(blob => {
+        if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+        lastBlobUrl = URL.createObjectURL(blob);
+        $('preview').src = lastBlobUrl;
+        $('download').disabled = false;
+        $('status').textContent = `Klart: ${N}×${M} pärlor, ${palette.length} färger.`;
+      }, 'image/png');
+    }, 20);
+  }
+
+  // Medelvärdesbilda bildens pixlar inom varje rutcell -> [r,g,b] per cell.
+  function sampleGrid(image, N, M, fit) {
+    const maxSide = 1600;
+    const s = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+    const W = Math.max(1, Math.round(image.naturalWidth * s));
+    const H = Math.max(1, Math.round(image.naturalHeight * s));
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, W, H);
+    const data = ctx.getImageData(0, 0, W, H).data;
+
+    // Källområde (sx, sy, sw, sh) i bilden som ska täcka rutnätet
+    let sx = 0, sy = 0, sw = W, sh = H;
+    const gridAspect = N / M, imgAspect = W / H;
+    if (fit === 'crop') {
+      if (imgAspect > gridAspect) { sw = H * gridAspect; sx = (W - sw) / 2; }
+      else { sh = W / gridAspect; sy = (H - sh) / 2; }
+    } else if (fit === 'pad') {
+      if (imgAspect > gridAspect) { sh = W / gridAspect; sy = (H - sh) / 2; }
+      else { sw = H * gridAspect; sx = (W - sw) / 2; }
+    }
+
+    const cells = new Array(N * M);
+    for (let j = 0; j < M; j++) {
+      for (let i = 0; i < N; i++) {
+        const x0 = sx + sw * i / N, x1 = sx + sw * (i + 1) / N;
+        const y0 = sy + sh * j / M, y1 = sy + sh * (j + 1) / M;
+        let r = 0, g = 0, b = 0, n = 0;
+        const xa = Math.floor(x0), xb = Math.max(xa + 1, Math.ceil(x1));
+        const ya = Math.floor(y0), yb = Math.max(ya + 1, Math.ceil(y1));
+        for (let y = ya; y < yb; y++) {
+          for (let x = xa; x < xb; x++) {
+            let pr = 255, pg = 255, pb = 255; // utanför bilden = vitt
+            if (x >= 0 && x < W && y >= 0 && y < H) {
+              const k = (y * W + x) * 4;
+              const a = data[k + 3] / 255;
+              pr = data[k] * a + 255 * (1 - a);
+              pg = data[k + 1] * a + 255 * (1 - a);
+              pb = data[k + 2] * a + 255 * (1 - a);
+            }
+            r += pr; g += pg; b += pb; n++;
+          }
+        }
+        cells[j * N + i] = [r / n, g / n, b / n];
+      }
+    }
+    return cells;
+  }
+
+  // sRGB -> CIELAB, så att färgavstånd motsvarar upplevd skillnad bättre
+  function rgb2lab([r, g, b]) {
+    const lin = v => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const R = lin(r), G = lin(g), B = lin(b);
+    let X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047;
+    let Y = (R * 0.2126 + G * 0.7152 + B * 0.0722);
+    let Z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+    const f = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+    X = f(X); Y = f(Y); Z = f(Z);
+    return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+  }
+  const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+
+  // Deterministisk slumpgenerator så att samma inställningar ger samma mönster
+  function mulberry32(a) {
+    return () => {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // k-means (k-means++-start) i Lab-rymd. Paletten blir medelfärgen (RGB) i varje kluster.
+  function quantize(cells, K) {
+    const labs = cells.map(rgb2lab);
+    const n = labs.length;
+    const rand = mulberry32(12345);
+
+    // k-means++
+    const centers = [labs[Math.floor(rand() * n)].slice()];
+    const d = new Float64Array(n).fill(Infinity);
+    while (centers.length < K) {
+      const last = centers[centers.length - 1];
+      let sum = 0;
+      for (let i = 0; i < n; i++) { d[i] = Math.min(d[i], dist2(labs[i], last)); sum += d[i]; }
+      if (sum === 0) break; // färre unika färger än K
+      let t = rand() * sum, idx = 0;
+      for (; idx < n - 1; idx++) { t -= d[idx]; if (t <= 0) break; }
+      centers.push(labs[idx].slice());
+    }
+
+    const labels = new Int32Array(n);
+    for (let iter = 0; iter < 30; iter++) {
+      let changed = 0;
+      for (let i = 0; i < n; i++) {
+        let best = 0, bd = Infinity;
+        for (let c = 0; c < centers.length; c++) {
+          const dd = dist2(labs[i], centers[c]);
+          if (dd < bd) { bd = dd; best = c; }
+        }
+        if (labels[i] !== best || iter === 0) { labels[i] = best; changed++; }
+      }
+      const acc = centers.map(() => [0, 0, 0, 0]);
+      for (let i = 0; i < n; i++) {
+        const a = acc[labels[i]], l = labs[i];
+        a[0] += l[0]; a[1] += l[1]; a[2] += l[2]; a[3]++;
+      }
+      acc.forEach((a, c) => { if (a[3]) centers[c] = [a[0] / a[3], a[1] / a[3], a[2] / a[3]]; });
+      if (!changed && iter > 0) break;
+    }
+
+    // Palett i RGB, ta bort tomma kluster och sortera efter antal (flest först)
+    const acc = centers.map(() => [0, 0, 0, 0]);
+    for (let i = 0; i < n; i++) {
+      const a = acc[labels[i]], c = cells[i];
+      a[0] += c[0]; a[1] += c[1]; a[2] += c[2]; a[3]++;
+    }
+    const order = acc.map((a, i) => i).filter(i => acc[i][3] > 0).sort((p, q) => acc[q][3] - acc[p][3]);
+    const remap = new Int32Array(centers.length).fill(-1);
+    order.forEach((old, nw) => remap[old] = nw);
+    const palette = order.map(i => {
+      const a = acc[i];
+      return { rgb: [Math.round(a[0] / a[3]), Math.round(a[1] / a[3]), Math.round(a[2] / a[3])], count: a[3] };
+    });
+    for (let i = 0; i < n; i++) labels[i] = remap[labels[i]];
+    return { palette, labels };
+  }
+
+  const hex = ([r, g, b]) => '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+  const luminance = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
+  const shade = ([r, g, b], f) => `rgb(${[r, g, b].map(v => Math.round(f < 0 ? v * (1 + f) : v + (255 - v) * f)).join(',')})`;
+
+  function render(N, M, cells, palette, labels, cell, showSymbols, grid10) {
+    const margin = Math.round(cell * 1.4);         // plats för rad-/kolumnnummer
+    const legendCols = Math.max(1, Math.min(palette.length, Math.floor((N * cell + margin) / 210)));
+    const legendRowH = Math.max(28, cell + 8);
+    const legendRows = Math.ceil(palette.length / legendCols);
+    const legendH = 50 + legendRows * legendRowH + 10;
+    const W = Math.max(N * cell + margin * 2, legendCols * 210 + margin * 2);
+    const H = M * cell + margin * 2 + legendH;
+
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, H);
+
+    const ox = margin, oy = margin;
+
+    // Pärlplattans bakgrund
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(ox, oy, N * cell, M * cell);
+
+    // Pärlor
+    const r = cell * 0.46, hole = cell * 0.16;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${Math.round(cell * 0.42)}px system-ui, sans-serif`;
+    for (let j = 0; j < M; j++) {
+      for (let i = 0; i < N; i++) {
+        const p = palette[labels[j * N + i]];
+        const cx = ox + (i + 0.5) * cell, cy = oy + (j + 0.5) * cell;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = hex(p.rgb);
+        ctx.fill();
+        ctx.lineWidth = Math.max(1, cell / 24);
+        ctx.strokeStyle = shade(p.rgb, -0.35);
+        ctx.stroke();
+        if (showSymbols) {
+          ctx.fillStyle = luminance(p.rgb) > 140 ? '#000' : '#fff';
+          ctx.fillText(SYMBOLS[labels[j * N + i]], cx, cy + 1);
+        } else {
+          ctx.beginPath();
+          ctx.arc(cx, cy, hole, 0, Math.PI * 2);
+          ctx.fillStyle = shade(p.rgb, luminance(p.rgb) > 140 ? -0.3 : 0.4);
+          ctx.fill();
+        }
+      }
+    }
+
+    // Rutnät
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.beginPath();
+    for (let i = 0; i <= N; i++) { ctx.moveTo(ox + i * cell + 0.5, oy); ctx.lineTo(ox + i * cell + 0.5, oy + M * cell); }
+    for (let j = 0; j <= M; j++) { ctx.moveTo(ox, oy + j * cell + 0.5); ctx.lineTo(ox + N * cell, oy + j * cell + 0.5); }
+    ctx.stroke();
+    if (grid10) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(220,0,0,0.7)';
+      ctx.beginPath();
+      for (let i = 10; i < N; i += 10) { ctx.moveTo(ox + i * cell, oy); ctx.lineTo(ox + i * cell, oy + M * cell); }
+      for (let j = 10; j < M; j += 10) { ctx.moveTo(ox, oy + j * cell); ctx.lineTo(ox + N * cell, oy + j * cell); }
+      ctx.stroke();
+    }
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#333';
+    ctx.strokeRect(ox, oy, N * cell, M * cell);
+
+    // Rad- och kolumnnummer
+    ctx.fillStyle = '#444';
+    ctx.font = `${Math.round(Math.min(cell * 0.45, 14))}px system-ui, sans-serif`;
+    const step = cell < 14 ? 5 : 1;
+    for (let i = 0; i < N; i++) {
+      if ((i + 1) % step && i) continue;
+      const x = ox + (i + 0.5) * cell;
+      ctx.fillText(String(i + 1), x, oy - margin / 2);
+      ctx.fillText(String(i + 1), x, oy + M * cell + margin / 2);
+    }
+    for (let j = 0; j < M; j++) {
+      if ((j + 1) % step && j) continue;
+      const y = oy + (j + 0.5) * cell;
+      ctx.fillText(String(j + 1), ox - margin / 2, y);
+      ctx.fillText(String(j + 1), ox + N * cell + margin / 2, y);
+    }
+
+    // Färgförklaring
+    const ly = oy + M * cell + margin + 10;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#222';
+    ctx.font = 'bold 16px system-ui, sans-serif';
+    ctx.fillText(`${N} × ${M} pärlor = ${N * M} st, ${palette.length} färger`, ox, ly + 10);
+    ctx.font = '14px system-ui, sans-serif';
+    palette.forEach((p, k) => {
+      const col = k % legendCols, row = Math.floor(k / legendCols);
+      const x = ox + col * 210, y = ly + 40 + row * legendRowH + legendRowH / 2;
+      const rr = Math.min(12, legendRowH / 2 - 2);
+      ctx.beginPath();
+      ctx.arc(x + rr, y, rr, 0, Math.PI * 2);
+      ctx.fillStyle = hex(p.rgb);
+      ctx.fill();
+      ctx.strokeStyle = shade(p.rgb, -0.35);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = luminance(p.rgb) > 140 ? '#000' : '#fff';
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      ctx.fillText(SYMBOLS[k], x + rr, y + 1);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#222';
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.fillText(`${hex(p.rgb)}  ×${p.count}`, x + rr * 2 + 8, y + 1);
+    });
+
+    return c;
+  }
+})();
+</script>
+</body>
+</html>

@@ -19,6 +19,7 @@
   .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 16px; align-items: end; }
   label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; color: var(--muted); }
   label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
   input[type=number], input[type=file], select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
   button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: default; }
@@ -59,6 +60,9 @@
           </label>
           <label>Pärlstorlek i PNG (px)
             <input type="number" id="cell" value="24" min="8" max="64">
+          </label>
+          <label>Kontrastförstärkning: <span id="contrastVal">0 %</span>
+            <input type="range" id="contrast" value="0" min="0" max="200" step="5">
           </label>
           <label class="check"><input type="checkbox" id="symbols" checked> Visa symboler</label>
           <label class="check"><input type="checkbox" id="grid10" checked> Stödlinjer var 10:e</label>
@@ -106,6 +110,8 @@
   });
 
   $('generate').addEventListener('click', generate);
+  $('contrast').addEventListener('input', () => { $('contrastVal').textContent = `${$('contrast').value} %`; });
+  $('contrast').addEventListener('change', generate);
   $('download').addEventListener('click', () => {
     if (!lastBlobUrl) return;
     const a = document.createElement('a');
@@ -129,7 +135,7 @@
     $('status').textContent = 'Beräknar…';
     // Låt webbläsaren rita statusraden innan tunga beräkningar
     setTimeout(() => {
-      const cells = sampleGrid(img, N, M, $('fit').value);
+      const cells = boostContrast(sampleGrid(img, N, M, $('fit').value), 1 + clampInt($('contrast').value, 0, 200) / 100);
       const { palette, labels } = quantize(cells, K);
       const canvas = render(N, M, cells, palette, labels, cell, $('symbols').checked, $('grid10').checked);
       canvas.toBlob(blob => {
@@ -190,6 +196,18 @@
       }
     }
     return cells;
+  }
+
+  // Färgfilter: öka kontrasten genom att sträcka ut färgerna kring bildens medelljushet.
+  // Att använda medelljusheten (i stället för mittgrått) som pivå bevarar bildens
+  // totala ljusnivå, och samma pivå för alla kanaler bevarar nyanserna.
+  function boostContrast(cells, factor) {
+    if (factor === 1) return cells;
+    let mean = 0;
+    for (const c of cells) mean += luminance(c);
+    mean /= cells.length;
+    const f = v => Math.min(255, Math.max(0, mean + (v - mean) * factor));
+    return cells.map(([r, g, b]) => [f(r), f(g), f(b)]);
   }
 
   // sRGB -> CIELAB, så att färgavstånd motsvarar upplevd skillnad bättre
